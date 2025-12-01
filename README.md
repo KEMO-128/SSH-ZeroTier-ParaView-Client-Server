@@ -1,5 +1,36 @@
 # SSH-ZeroTier-ParaView-Client-Server
 
+##SOP
+确定zerotier是正常连接的
+```bash
+ping 10.243.162.93
+```
+```bash
+ssh sjtu@10.243.162.93
+```
+在 Windows 另开一个 PowerShell（当前 SSH 这个窗口不要关）
+```bash
+ssh -L 11111:localhost:11111 sjtu@10.243.162.93
+```
+在Linux中
+```bash
+pvserver --server-port=11111
+```
+在paraview里配置server文件\
+然后在算例文件夹下
+```bash
+touch case_name.foam
+```
+就可以正常使用了！
+
+关的时候\
+
+
+
+---
+
+
+
 **pvserver 就是用来“画图”的那一端**：
 
 * 它在 Linux 服务器上读 OpenFOAM 数据、做滤波/算场等
