@@ -1,16 +1,16 @@
 # SSH-ZeroTier-ParaView-Client-Server
 
-##SOP
+## SOP
 确定zerotier是正常连接的
 ```bash
 ping 10.243.162.93
 ```
 ```bash
-ssh sjtu@10.243.162.93
+ssh -L 11111:localhost:11111 sjtu@10.243.162.93
 ```
 在 Windows 另开一个 PowerShell（当前 SSH 这个窗口不要关）
 ```bash
-ssh -L 11111:localhost:11111 sjtu@10.243.162.93
+ssh sjtu@10.243.162.93
 ```
 在Linux中
 ```bash
@@ -24,316 +24,402 @@ touch case_name.foam
 就可以正常使用了！
 
 关的时候\
+先关 ParaView（GUI）
+
+再停 pvserver（Linux，窗口 B）
+   在运行 `pvserver` 的 ssh 窗口里按：
+
+   ```text
+   Ctrl + C
+   ```
+
+再关 SSH 隧道（Windows，窗口 A）
+   在跑 `ssh -L ...` 的那个 PowerShell 窗口里按：
+
+   ```text
+   Ctrl + C
+   ```
+
+关 SSH 登录窗口（B）
+   在 Linux shell 里输入：
+
+   ```bash
+   exit
+   ```
+
+ZeroTier 可以一直挂着，无所谓。
+下次用时，从“建立 SSH 隧道”那一步重新走即可。
 
 
 
 ---
 
+## 一、我们解决的是什么问题？什么时候适合用这套方案？
 
+你的实际情况是：
 
-**pvserver 就是用来“画图”的那一端**：
+* 服务器在实验室 **Linux 台式机（无 GPU）**
+* 你在 **Windows 笔记本上** 想跑 OpenFOAM 大算例并看图
+* 老师原方案：
 
-* 它在 Linux 服务器上读 OpenFOAM 数据、做滤波/算场等
-* 然后把结果通过网络发给你 Windows 上的 ParaView 客户端
-* Windows 负责真正的“画图”和交互
+  * 在 Linux 上跑算例
+  * 用向日葵远控看图形界面
+* 但：
 
-所以你现在这一整套：`pvserver（服务器） + ParaView（本地）`
-就是标准的 **Client–Server 远程后处理工作流**。
+  * 向日葵有延迟，刷新跟不上，大算例旋转/操作极其卡
+  * 你经常在校外/异地，需要穿校园网、VPN、梯子，网络路径复杂
 
+所以我们设计了一套更“专业”的方案：
 
-## 🧾 1. Daily Remote Visualization SOP
+> **Linux 负责算 + 数据处理，Windows 负责画图和交互**
+> —— 用 **ZeroTier + SSH 隧道 + ParaView Client–Server**
 
+这种配置适用于：
 
-# Remote OpenFOAM Visualization via ZeroTier + SSH + ParaView
+* ☑ 没 GPU、但要看大规模 OpenFOAM 结果
+* ☑ 不想把动辄几十 GB 的结果文件拷到本地
+* ☑ 不想一直靠远控桌面（向日葵/TeamViewer）
+* ☑ 经常在校外，网络环境复杂（校园网 + VPN + 梯子）
 
-This document describes the daily workflow for visualizing large OpenFOAM cases
-on a remote Ubuntu server using ParaView Client–Server mode.
-```markdown
-- Server OS: Ubuntu 22.04
-- Server hostname: `sjtu-desktop`
-- Server user: `sjtu`
-- ZeroTier IP (server): `10.243.162.93`
-- ParaView on server: 5.6.3 (OpenFOAM ThirdParty)
-- ParaView on client (Windows): 5.6.2
-- SSH tunnel & pvserver port: **11111**
-```
-You can adapt these values to your own setup.
+不适用的情况：
+
+* 只在本地小算例玩玩 → 本机装个 ParaView 直接打开就行
+* 本地机器有很强的 GPU → 可以考虑把 case 拷回本地后处理
 
 ---
 
-## 0. Prerequisites (done once)
+## 二、整体架构：这套东西是怎么“串起来”的？
 
-- ZeroTier network is created and both:
-  - Windows laptop and
-  - `sjtu-desktop` (Ubuntu server)
-  are **joined** and **authorized**.
-- From Windows you can ping the server:
+你现在的最终架构可以一句话概括：
 
-```powershell
-  ping 10.243.162.93
-```
-* OpenSSH client is available on Windows (`ssh` works in PowerShell).
-* ParaView 5.6.2 (Windows, non-MPI) is installed, e.g.:
+> **ZeroTier 做“虚拟局域网”，SSH 做“加密隧道”，pvserver 做“远端 post 处理核心”，Windows ParaView 做“前端 GUI”。**
 
-  ```text
-  ParaView-5.6.2-Windows-msvc2015-64bit.exe
+具体链路：
+
+1. **ZeroTier**
+
+   * 让 Windows 和 Linux 虚拟出一个内网（10.x.x.x 那个 IP）
+   * 避开校园网/VPN/梯子带来的各种路由问题
+   * 你现在服务器的 ZeroTier IP 是：
+     `10.243.162.93`
+
+2. **SSH + 端口转发（隧道）**
+
+   * 在 Windows 上开一条隧道：
+
+     ```bash
+     ssh -L 11111:localhost:11111 sjtu@10.243.162.93
+     ```
+   * 意思是：
+     Windows 的 `localhost:11111` → 被转发到 Linux 的 `localhost:11111`
+
+3. **Linux 上的 pvserver**
+
+   * 在 Linux 上跑：
+
+     ```bash
+     pvserver --server-port=11111
+     ```
+   * 相当于在服务器上开了一个“可视化服务端”，等客户端连过来
+
+4. **Windows 上的 ParaView Client（5.6.2）**
+
+   * 你装了 ParaView 5.6.2（和 Linux 上的 5.6.3 同一个大版本）
+   * 在 ParaView 里配置一个服务器：
+
+     * Host: `localhost`
+     * Port: `11111`
+   * 通过 SSH 隧道去连 Linux 上的 pvserver
+
+**这样一来：**
+
+* 数据一直在 Linux 硬盘上，不搬家
+* 计算也在 Linux 上做
+* 你只在 Windows 上收“画图指令 + 渲染结果”，速度远比远程桌面稳和快
+
+---
+
+## 三、一次性配置要做的事（你已经搞完了）
+
+这些是你已经完成、以后不用再重复的：
+
+### 1. ZeroTier 配网
+
+* 创建一个 ZeroTier 网络（你的是 `56374AC9A498D3FB`）
+
+* Windows 加入该网络，后台授权（AUTH 打勾）
+
+* Linux 安装 ZeroTier：
+
+  ```bash
+  curl -s https://install.zerotier.com | sudo bash
+  sudo zerotier-cli join 56374AC9A498D3FB
   ```
 
+* 在 ZeroTier 后台给 Linux 那一项也打勾 AUTH
+
+* 最终在 Linux 上看到类似：
+
+  ```bash
+  sudo zerotier-cli listnetworks
+  # ... OK PRIVATE ... 10.243.162.93/16
+  ```
+
+### 2. 安装 ParaView 版本匹配
+
+* Linux：OpenFOAM 自带 ParaView 5.6.3（ThirdParty）
+* Windows：单独安装 ParaView 5.6.2（non-MPI，msvc2015，64bit）
+
+  * 文件名：`ParaView-5.6.2-Windows-msvc2015-64bit.exe`
+
+**关键点：**
+服务器端 pvserver 和客户端 ParaView 要在 **同一个大版本（5.6.x 系列）**，
+否则就会报：
+
+> Client/server version hash mismatch
+
 ---
 
-## 1. Start SSH tunnel (Windows)
+## 四、日常使用的完整流程（每天从 0 到画出图）
 
-Open **PowerShell** on Windows and run:
+### 0. 检查 ZeroTier 是否在线
+
+在 Windows PowerShell：
+
+```powershell
+ping 10.243.162.93
+```
+
+能 ping 通（几 ms 延迟） → ZeroTier OK。
+
+---
+
+### 1. 在 Windows 上建立 SSH 隧道（窗口 A，**全程要开着**）
+
+打开 PowerShell：
 
 ```powershell
 ssh -L 11111:localhost:11111 sjtu@10.243.162.93
 ```
 
-* Enter the password when prompted.
-* **Do not close this window**.
-  It is the SSH tunnel that forwards local port `11111` → server `11111`.
+* 输入密码
+* 登录进去后，这个窗口保持不动，**不要关**
+* 它就是你 ParaView 的“高速通道”
+
+> 🧠 记：**ssh -L 一定在 Windows 开，Linux 端绝对不要再跑这条命令**。
+> 你之前的问题就是在 Linux 上也开了 `ssh -L`，把 11111 端口占了。
 
 ---
 
-## 2. SSH login to the server (Windows)
+### 2. 在 Windows 上再开一个 SSH 登录（窗口 B）
 
-Open a **second** PowerShell window and run:
+再开一个 PowerShell 窗口：
 
 ```powershell
 ssh sjtu@10.243.162.93
 ```
 
-This shell will be used to control the server (run `pvserver`, check files, etc.).
+这是你的“操作窗口”，用来：
 
-Change to your OpenFOAM case directory, for example:
+* cd 到算例目录
+* 创建 `.foam` 文件
+* 启动 `pvserver`
+
+例如：
 
 ```bash
 cd /media/sjtu/sdb/srs
-```
-
-If needed, create a `.foam` file:
-
-```bash
 touch srs.foam
 ```
 
 ---
 
-## 3. Start `pvserver` on the server (Linux)
+### 3. 在 Linux 上启动 pvserver（在窗口 B，**全程要开着**）
 
-In the SSH shell (second PowerShell window, already logged into Linux) run:
+在 SSH 登录的这个窗口里运行：
 
 ```bash
 pvserver --server-port=11111
 ```
 
-Expected output:
+看到：
 
 ```text
 Waiting for client...
 Connection URL: cs://sjtu-desktop:11111
 ```
 
-Keep this terminal open.
-`pvserver` is now waiting for a ParaView client to connect.
+说明 pvserver 啥事没有，在等客户端连。
+**这个窗口同样要全程开着**，直到你画完图。
 
 ---
 
-## 4. Start ParaView (Windows client)
+### 4. 在 Windows 上打开 ParaView 5.6.2（GUI）
 
-On Windows, start **ParaView 5.6.2**:
+通过开始菜单或 paraview.exe 打开：
 
-* via Start Menu, or
-* by running:
-
-  ```text
-  ...\ParaView 5.6.2-Windows-msvc2015-64bit\bin\paraview.exe
-  ```
+> 重点：**一定是 5.6.2，不是你本地那个 5.13.3**
 
 ---
 
-## 5. Configure and connect to the remote server
+### 5. 在 ParaView 中配置并连接服务器
 
-In ParaView (Windows):
+1. 菜单：**File → Connect…**
 
-1. Go to **File → Connect…**
+2. Add Server：
 
-2. Click **Add Server…**
+   * Name: 随便，比如 `foam-remote`
+   * Server Type: Client/Server
+   * Host: `localhost`
+   * Port: `11111`
+   * Startup Type: `Manual`（因为你已经在 Linux 手动启动了 pvserver）
 
-3. Configure:
+3. Save 之后，在列表选中 `foam-remote` → 点击 Connect
 
-   * **Name:** `foam-remote` (any name is fine)
-   * **Server Type:** `Client / Server`
-   * **Host:** `localhost`
-   * **Port:** `11111`
-   * **Startup Type:** `Manual`
+**成功标志：**
 
-4. Save the configuration.
-
-5. Select `foam-remote` in the list and click **Connect**.
-
-If the connection is successful:
-
-* On Linux (pvserver terminal) you will see:
+* Linux 端 pvserver 的窗口里多一行：
 
   ```text
   Client connected
   ```
-
-* In ParaView (Windows) you will see a green “Connected” indicator at the bottom.
+* Windows ParaView 右下角出现绿色连接图标
 
 ---
 
-## 6. Open the OpenFOAM case (remote filesystem)
+### 6. 打开远程 OpenFOAM case
 
-In ParaView (Windows):
+在 ParaView 中：
 
-1. Go to **File → Open…**
-
-2. In the file dialog, switch to **Remote file system** (not Local).
-
-3. Browse to your case directory, e.g.:
+1. **File → Open…**
+2. 在顶部切换为 **Remote File System**（不是 Local）
+3. 浏览到你的 case 目录，例如：
 
    ```text
    /media/sjtu/sdb/srs
    ```
+4. 选择 `srs.foam`（或你自己的 `.foam` 文件）
+5. 点 **Open** → 左侧点 **Apply**
 
-4. Select `srs.foam` (or your own `.foam` file).
-
-5. Click **Open**, then **Apply** in the Properties panel.
-
-You can now interactively visualize the large OpenFOAM case using the remote
-server’s `pvserver` and your local ParaView client.
+此时你看到的网格/流场，是服务器读数据后的结果，通过 SSH 隧道传到你 Windows 渲染的。
 
 ---
 
-## 7. Clean shutdown (recommended order)
+## 五、用完之后如何“优雅正确地关掉一切”？
 
-When you are done:
+顺序建议如下（从内到外）：
 
-1. **Close ParaView** (Windows GUI).
+1. **先关 ParaView（GUI）**
+   → Windows 上直接叉掉窗口
 
-2. On the Linux `pvserver` terminal, press:
-
-   ```text
-   Ctrl + C
-   ```
-
-   to stop `pvserver`.
-
-3. On the Windows tunnel PowerShell window (the one with `ssh -L ...`), press:
+2. **再停 pvserver（Linux，窗口 B）**
+   在运行 `pvserver` 的 ssh 窗口里按：
 
    ```text
    Ctrl + C
    ```
 
-   to close the SSH tunnel.
+3. **再关 SSH 隧道（Windows，窗口 A）**
+   在跑 `ssh -L ...` 的那个 PowerShell 窗口里按：
 
-4. On the Windows SSH shell (logged into Linux), type:
+   ```text
+   Ctrl + C
+   ```
+
+4. **关 SSH 登录窗口（B）**
+   在 Linux shell 里输入：
 
    ```bash
    exit
    ```
 
-   to end the SSH session.
-
-ZeroTier can remain running in the background.
-Next time, simply repeat sections **1–6**.
+ZeroTier 可以一直挂着，无所谓。
+下次用时，从“建立 SSH 隧道”那一步重新走即可。
 
 ---
 
-## 8. Troubleshooting notes
+## 六、常见坑 & 关键细节（你已经踩过的那些）
 
-* **`Connection refused` when running `ssh sjtu@10.243.162.93`**
-  → SSH service on the server may be stopped.
-  Log in via local console or remote desktop and run:
+### 1. `Connection timed out` vs `Connection refused`
+
+* **timeout** → 通常是网络不通（ZeroTier 掉线 / VPN 乱路由）
+* **refused** → 通常是 Linux 上 sshd 挂了（你之前用 `pkill ssh` 把它干掉了）
+
+解决 refused：
+
+* 用向日葵/本地登录 Linux，执行：
 
   ```bash
   sudo systemctl restart ssh
   ```
 
-* **`address already in use` when starting `pvserver`**
-  → Some process is occupying port 11111. On Linux, run:
+---
 
-  ```bash
-  sudo ss -tlnp | grep 11111
-  ```
+### 2. `address already in use`（pvserver 启动时）
 
-  Kill the offending process (e.g., old `pvserver` or `ssh -L`) and restart:
+原因：11111 端口已经被占用了，常见两种情况：
 
-  ```bash
-  sudo pkill pvserver
-  sudo pkill ssh
-  pvserver --server-port=11111
-  ```
+* 之前的 pvserver 没关干净
+* 你在 Linux 上误跑了 `ssh -L 11111:...` 自己占着端口
 
-* **`Client/server version hash mismatch`**
-  → ParaView client and `pvserver` versions are incompatible.
-  Use ParaView 5.6.x on Windows to match server ParaView 5.6.3.
+排查 & 解决：
 
-````
+```bash
+sudo ss -tlnp | grep 11111
+# 找到占用这个端口的进程 PID，比如 ssh pid=19690
+sudo kill 19690
+```
+
+然后再跑：
+
+```bash
+pvserver --server-port=11111
+```
 
 ---
 
-## 🖥 2. 一键启动脚本：自动开隧道 + SSH 登录
+### 3. `Client/server version hash mismatch`
 
-你现在每天要手动敲两条命令：
+原因：你的 Windows ParaView 和 Linux pvserver **版本不一致**，比如：
 
-1. `ssh -L 11111:localhost:11111 sjtu@10.243.162.93`
-2. `ssh sjtu@10.243.162.93`
+* Linux：ParaView 5.6.3
+* Windows：ParaView 5.13.3
 
-我们可以弄一个 **Windows 批处理脚本 `.bat`**，双击就自动开两个 PowerShell 窗口：
+解决：Windows 上安装 **5.6.x 系列**（你现在是 5.6.2），只用它来连远程服务器。
 
-- 一个跑隧道（`ssh -L`，窗口标题叫 “SSH tunnel”）  
-- 一个跑普通 SSH 登录（标题叫 “SSH shell”）
+---
 
-你可以在仓库里建个 `scripts/` 目录，放一个 `start_remote_viz.bat`：
+### 4. 哪些窗口“必须全程开着”？
 
-```bat
-@echo off
-REM ============================================================
-REM  start_remote_viz.bat
-REM  - Open SSH tunnel for ParaView Client–Server
-REM  - Open an interactive SSH shell to the server
-REM ============================================================
+日常工作时，**至少要保持这几个一直存在**：
 
-set SERVER_USER=sjtu
-set SERVER_IP=10.243.162.93
-set TUNNEL_PORT=11111
+1. **Windows：SSH 隧道窗口（ssh -L 11111:localhost:11111 ...）**
 
-REM --- Start SSH tunnel in a new PowerShell window ---
-start "SSH tunnel" powershell -NoExit ^
-  ssh -L %TUNNEL_PORT%:localhost:%TUNNEL_PORT% %SERVER_USER%@%SERVER_IP%
+   * 关闭 → 隧道断 → ParaView 断线
 
-REM --- Start normal SSH shell in another PowerShell window ---
-start "SSH shell" powershell -NoExit ^
-  ssh %SERVER_USER%@%SERVER_IP%
-````
+2. **Linux：pvserver 窗口**
 
-> 说明：
->
-> * `start "窗口标题" powershell -NoExit ssh ...`
->   会打开一个新的 PowerShell 窗口并保持打开
-> * 第一行窗口用于跑隧道，第二行窗口用于普通 ssh 登录
+   * 关闭/打断 → 可视化服务端没了 → ParaView 会断线
 
-你可以在 README 里再加一个 “Helper scripts” 部分，例如：
+3. **（可选）Windows：SSH 登录窗口**
 
-````markdown
-## Helper scripts
+   * 不一定要一直开着，但一般都会留着方便敲命令
+   * 就算关了也不影响已经运行中的 pvserver（除非你是在同一个会话里起的，没用 tmux）
 
-A helper batch script is provided in `scripts/start_remote_viz.bat`:
+---
 
-- Starts an SSH tunnel for ParaView Client–Server:
-  - `local:11111 → server:11111`
-- Opens an interactive SSH shell to the server.
+## 七、什么时候优先考虑这种配置？
 
-Usage (Windows):
+总结一下“这套东西值不值得折腾”的判断标准：
 
-```text
-Double-click `start_remote_viz.bat`.
-- A window titled "SSH tunnel" will appear (keep it open).
-- A window titled "SSH shell" will appear; use it to run `pvserver`:
-  pvserver --server-port=11111
-````
+* ✅ 你的算例 **太大**，本地拉不动；
+* ✅ 服务器是固定的 Linux 主机，存算例的硬盘也在那；
+* ✅ 没 GPU，远程桌面渲染卡、人也难受；
+* ✅ 经常在各种网络环境（宿舍、寝室、校外）远程连服务器；
+* ✅ 希望有**长期稳定的科研工作流**，而不是临时凑合。
 
+对于你现在 OpenFOAM + 飞鱼 / cavity / 两相流等题目，这套方案基本是“正解”。
 
+---
+
+如果你愿意，我还能帮你再加一个简短版（比如 10 行的“超速上手版”，贴在 README 最上面当 cheat sheet），或者帮你写一个 `tmux` 使用小节，让你即使 SSH 断了、pvserver 或求解器也不会被杀。你要的话我可以直接写好给你。
