@@ -12,7 +12,6 @@ ssh -L 11111:localhost:11111 sjtu@10.243.162.93
 ```bash
 ssh sjtu@10.243.162.93
 ```
-在Linux中
 ```bash
 pvserver --server-port=11111
 ```
